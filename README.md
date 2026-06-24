@@ -1,1 +1,12 @@
 # claude
+
+Personal Claude Code setup: global configuration, status line, skills, and
+tools, version-controlled so they can be applied consistently across
+machines.
+
+## Contents
+
+- [`statusline/`](statusline/README.md) — custom status line showing
+  current directory, model, context-window usage, and 5-hour/weekly
+  rate-limit usage as colored gauges. See its README for install
+  instructions.
