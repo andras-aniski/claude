@@ -7,6 +7,6 @@ machines.
 ## Contents
 
 - [`statusline/`](statusline/README.md) — custom status line showing
-  current directory, model, context-window usage, and 5-hour/weekly
-  rate-limit usage as colored gauges. See its README for install
-  instructions.
+  current directory, model, context-window usage, 5-hour/weekly
+  rate-limit usage as colored gauges, and (when run inside a git repo)
+  branch/dirty/ahead-behind info. See its README for install instructions.

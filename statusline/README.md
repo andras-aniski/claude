@@ -2,11 +2,14 @@
 
 A custom status line for Claude Code that shows the current directory, model,
 context-window usage, and 5-hour/weekly rate-limit usage as colored gauges.
+When run inside a git repo, a second line shows the branch, dirty state, and
+ahead/behind-upstream counts.
 
 Example output:
 
 ```
 MemButler | Sonnet 4.6 | ctx ████░░░░░░ 43% | 5h ███████░░░ 72% 02:10 | 7d █████████░ 91% Fri 08:00
+main ● ↑2 ↓1
 ```
 
 - `ctx` — percentage of the context window used in the current conversation.
@@ -18,6 +21,12 @@ MemButler | Sonnet 4.6 | ctx ████░░░░░░ 43% | 5h ███�
 - The 5h/7d segments only appear for Claude.ai subscription plans, once the
   first API response of a session has come back — they're omitted
   gracefully otherwise.
+- The git line shows the current branch (or `detached`), a yellow `●` if
+  there are uncommitted changes, and `↑N`/`↓M` if the branch is ahead/behind
+  its upstream. It's omitted entirely outside a git repo. It's built from a
+  single `git status --porcelain=v2 --branch` call (no separate
+  rev-parse/branch/rev-list calls), since the script runs on every status
+  line refresh.
 
 ## Requirements
 
@@ -47,6 +56,11 @@ MemButler | Sonnet 4.6 | ctx ████░░░░░░ 43% | 5h ███�
 
 3. Restart Claude Code (or start a new session) for the status line to take
    effect.
+
+Step 1 copies the file rather than symlinking it, so after editing
+`statusline-command.sh` in this repo, re-run the `cp` command to deploy the
+change to `~/.claude/statusline-command.sh` — otherwise Claude Code keeps
+running the old version.
 
 ## Customizing
 

@@ -7,6 +7,8 @@
 #   - context window usage (from .context_window.used_percentage)
 #   - 5-hour rate limit usage (from .rate_limits.five_hour.used_percentage)
 #   - 7-day (weekly) rate limit usage (from .rate_limits.seven_day.used_percentage)
+#   - a second line with git branch / dirty state / ahead-behind, when cwd
+#     is inside a git repo
 # These fields are part of the documented status line JSON stdin payload.
 # Rate limit fields are only present for Claude.ai subscribers after the
 # first API response of a session, so they are omitted gracefully if absent.
@@ -84,6 +86,12 @@ format_reset() {
   fi
 }
 
+# Single git invocation gathers branch, ahead/behind, and dirty state at
+# once (rather than separate rev-parse/branch/rev-list/status calls), since
+# this script runs on every status line refresh. Empty stdout means either
+# not a repo or git is missing; either way the git line is skipped.
+git_status=$(git -C "$cwd_input" status --porcelain=v2 --branch 2>/dev/null)
+
 printf "${WHITE}%s${RESET}" "$dir"
 
 if [ -n "$model" ]; then
@@ -117,3 +125,37 @@ if [ -n "$seven_day" ]; then
 fi
 
 printf "\n"
+
+if [ -n "$git_status" ]; then
+  branch=""
+  ab=""
+  dirty=0
+  # Pure-bash parsing (no awk/grep subprocesses) of the porcelain v2 output.
+  while IFS= read -r line; do
+    case "$line" in
+      "# branch.head "*) branch="${line#"# branch.head "}" ;;
+      "# branch.ab "*) ab="${line#"# branch.ab "}" ;;
+      "#"*) ;;
+      "") ;;
+      *) dirty=1 ;;
+    esac
+  done <<< "$git_status"
+
+  [ "$branch" = "(detached)" ] && branch="detached"
+
+  if [ -n "$branch" ]; then
+    printf "${WHITE}%s${RESET}" "$branch"
+    [ "$dirty" -eq 1 ] && printf " \033[1;33m●${RESET}"
+
+    if [ -n "$ab" ]; then
+      ahead="${ab%% *}"
+      behind="${ab#* }"
+      ahead="${ahead#+}"
+      behind="${behind#-}"
+      [ "$ahead" -gt 0 ] 2>/dev/null && printf " ${GREY}↑%s${RESET}" "$ahead"
+      [ "$behind" -gt 0 ] 2>/dev/null && printf " ${GREY}↓%s${RESET}" "$behind"
+    fi
+
+    printf "\n"
+  fi
+fi
