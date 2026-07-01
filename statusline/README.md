@@ -28,14 +28,89 @@ main ● ↑2 ↓1
   rev-parse/branch/rev-list calls), since the script runs on every status
   line refresh.
 
-## Requirements
+## Two implementations
+
+| File | Platform | Requirements |
+|---|---|---|
+| `statusline.py` + launcher | Linux, Mac, Windows | Python 3.8+ |
+| `statusline-command.sh` | Linux, Mac | bash, jq, awk, GNU date |
+
+The Python implementation is cross-platform and has no external dependencies
+beyond the Python standard library. The bash implementation is retained for
+environments where bash tooling is preferred.
+
+## Python install (cross-platform)
+
+### Requirements
+
+Python 3.8 or later. No third-party packages — only the standard library.
+
+Test your Python version:
+
+```bash
+python3 --version   # Linux / Mac
+python --version    # Windows
+```
+
+### Linux / Mac
+
+1. Copy the script and launcher into place:
+
+   ```bash
+   cp statusline.py ~/.claude/statusline.py
+   cp statusline-launcher.sh ~/.claude/statusline-launcher.sh
+   chmod +x ~/.claude/statusline-launcher.sh
+   ```
+
+2. Wire it up in `~/.claude/settings.json`. If that file doesn't exist yet,
+   copy `settings.snippet.linux.json` to `~/.claude/settings.json`. Otherwise
+   merge in the `statusLine` key:
+
+   ```bash
+   jq -s '.[0] * .[1]' ~/.claude/settings.json settings.snippet.linux.json \
+     > /tmp/settings.json && mv /tmp/settings.json ~/.claude/settings.json
+   ```
+
+3. Restart Claude Code for the status line to take effect.
+
+### Windows
+
+1. Copy the script and launcher into place:
+
+   ```powershell
+   Copy-Item statusline.py "$env:USERPROFILE\.claude\statusline.py"
+   Copy-Item statusline-launcher.cmd "$env:USERPROFILE\.claude\statusline-launcher.cmd"
+   ```
+
+2. Merge the `statusLine` key from `settings.snippet.windows.json` into
+   `%USERPROFILE%\.claude\settings.json`. If the settings file doesn't exist
+   yet, copy `settings.snippet.windows.json` directly.
+
+3. Restart Claude Code for the status line to take effect.
+
+If `python` is not found on your PATH but `py` (the Python Launcher for
+Windows) is, change `python` to `py` in `statusline-launcher.cmd`.
+
+### Testing without Claude Code
+
+```bash
+echo '{}' | python3 ~/.claude/statusline.py                   # minimal (just cwd)
+echo '{"model":{"display_name":"Sonnet 4.6"}}' | python3 ~/.claude/statusline.py
+```
+
+If Python is missing or below 3.8, the launcher prints a `[statusline]` warning
+in place of the normal output so you know exactly what to fix.
+
+## Bash install (Linux / Mac only)
+
+### Requirements
 
 - `bash`, `jq`, `awk`, GNU `date` (the `date -d "@<epoch>"` syntax used for
   reset times is a GNU coreutils feature — it will not work with the BSD
   `date` shipped on macOS; install GNU coreutils, e.g. via `brew install
   coreutils` and use `gdate`, if you need this on macOS).
 
-## Install
+### Install
 
 1. Copy the script into place:
 
@@ -64,11 +139,11 @@ running the old version.
 
 ## Customizing
 
-The script is self-contained and meant to be edited directly:
+Both scripts are self-contained and meant to be edited directly:
 
 - `bar_color()` controls the green/yellow/red thresholds (currently 60% /
   85%).
 - `make_bar()` controls the gauge width (currently 10 blocks, one per 10%)
   and the block characters (`█` filled / `░` empty).
-- The `CYAN` / `WHITE` / `GREY` variables near the top control the color
+- The `CYAN` / `WHITE` / `GREY` constants near the top control the color
   palette — tuned for a dark terminal background.
