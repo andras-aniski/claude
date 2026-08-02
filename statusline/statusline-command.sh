@@ -140,14 +140,27 @@ positive() {
 
 # Formats a Unix timestamp as a short reset time. Shows just "HH:MM" if
 # the reset falls within the next 24h, otherwise "Day HH:MM".
+#
+# Prints nothing for anything that isn't a usable epoch -- a millisecond-scale
+# value, an ISO-8601 string -- so a payload change costs one segment rather than
+# a shell arithmetic error on stderr every refresh.
+# Locals are fr_-prefixed like the other helpers: bash 3.2 has no block scope,
+# and a bare `diff` global would survive a failed conversion and hand the next
+# gauge the previous one's <24h decision.
 format_reset() {
-  ts=$1
-  now=$(date +%s)
-  diff=$((ts - now))
-  if [ "$diff" -lt 86400 ]; then
-    LC_TIME=C date -d "@$ts" '+%H:%M' 2>/dev/null
+  fr_ts=${1%%.*}   # tolerate "1785000000.0" the way format_duration does
+  case "$fr_ts" in
+    ''|*[!0-9]*) return ;;
+  esac
+  # Above the year-9999 epoch the formatting is meaningless anyway, and this
+  # is the same bound Python's datetime.fromtimestamp() enforces.
+  [ "$fr_ts" -gt 253402300799 ] && return
+
+  fr_diff=$((fr_ts - $(date +%s)))
+  if [ "$fr_diff" -lt 86400 ]; then
+    LC_TIME=C date -d "@$fr_ts" '+%H:%M' 2>/dev/null
   else
-    LC_TIME=C date -d "@$ts" '+%a %H:%M' 2>/dev/null
+    LC_TIME=C date -d "@$fr_ts" '+%a %H:%M' 2>/dev/null
   fi
 }
 

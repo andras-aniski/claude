@@ -8,4 +8,6 @@ if ! python3 -c "import sys; sys.exit(0 if sys.version_info>=(3,8) else 1)" 2>/d
     echo "[statusline] Python 3.8+ required, found: $ver"
     exit 0
 fi
-exec python3 ~/.claude/statusline.py
+# Resolve the script next to this launcher, so the pair can be copied anywhere
+# together without the path being rewritten.
+exec python3 "$(dirname "$0")/statusline.py"

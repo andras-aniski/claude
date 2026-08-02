@@ -10,4 +10,6 @@ if errorlevel 1 (
     echo [statusline] Python 3.8+ required, found %PYVER%
     exit /b 0
 )
-python "%USERPROFILE%\.claude\statusline.py"
+rem %~dp0 is this launcher's own directory (with a trailing backslash), so the
+rem pair can be copied anywhere together without the path being rewritten.
+python "%~dp0statusline.py"

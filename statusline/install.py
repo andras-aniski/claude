@@ -3,7 +3,7 @@
 import sys
 
 if sys.version_info < (3, 8):
-    print(f"Python 3.8+ required, found {sys.version.split()[0]}")
+    print("[statusline] Python 3.8+ required, found " + sys.version.split()[0])
     sys.exit(1)
 
 import json
@@ -54,12 +54,17 @@ def main() -> None:
 
     copy_file(HERE / 'statusline.py', target / 'statusline.py')
 
-    script = target / 'statusline.py'
+    # Both branches go through the launcher rather than invoking the
+    # interpreter directly: the launcher is what turns a missing or too-old
+    # Python into a readable "[statusline] ..." message instead of the shell's
+    # own "'python' is not recognized" / "command not found" landing in the
+    # status line. The path is absolute so Claude Code needn't expand ~ or
+    # %USERPROFILE%.
     if platform.system() == 'Windows':
         launcher = HERE / 'statusline-launcher.cmd'
-        copy_file(launcher, target / launcher.name)
-        # Write the absolute path so Claude Code doesn't need to expand %USERPROFILE%.
-        merge_settings(target, f'python "{script}"')
+        dst_launcher = target / launcher.name
+        copy_file(launcher, dst_launcher)
+        merge_settings(target, f'cmd /c "{dst_launcher}"')
     else:
         launcher = HERE / 'statusline-launcher.sh'
         dst_launcher = target / launcher.name

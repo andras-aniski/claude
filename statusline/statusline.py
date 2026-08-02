@@ -1,7 +1,11 @@
 import sys
 
 if sys.version_info < (3, 8):
-    print(f"⚠ Python 3.8+ required, found {sys.version.split()[0]}")
+    # Pure ASCII deliberately: this runs before the stdout UTF-8 reconfigure
+    # below, so a non-ASCII character here would raise UnicodeEncodeError on a
+    # legacy Windows code page -- a traceback in place of the actual message.
+    # The '[statusline]' prefix matches what the launchers print.
+    print("[statusline] Python 3.8+ required, found " + sys.version.split()[0])
     sys.exit(0)
 
 import json
@@ -69,8 +73,19 @@ def round_pct(pct: float) -> int:
     return int(pct + 0.5)
 
 
-def format_reset(ts: int) -> str:
-    reset = datetime.fromtimestamp(ts)
+def format_reset(ts) -> str:
+    """Formats a Unix timestamp as a short reset time: "HH:MM" if the reset
+    falls within the next 24h, otherwise "Day HH:MM".
+
+    Returns '' for anything that isn't a usable epoch -- a millisecond-scale
+    value, an ISO-8601 string -- so a payload change costs one segment rather
+    than the whole line. Unguarded, this is the only place where untrusted
+    payload data reaches a conversion that can raise.
+    """
+    try:
+        reset = datetime.fromtimestamp(float(ts))
+    except (TypeError, ValueError, OSError, OverflowError):
+        return ''
     diff = reset - datetime.now()
     if diff.total_seconds() < 86400:
         return reset.strftime('%H:%M')
@@ -146,7 +161,9 @@ def gauge(line: Line, label: str, pct: float, reset=None) -> None:
 
     if reset is not None:
         when = format_reset(reset)
-        line.add(f' {GREY}{when}{RESET}', f' {when}')
+        # Empty when the payload timestamp is unusable; skip rather than pad.
+        if when:
+            line.add(f' {GREY}{when}{RESET}', f' {when}')
 
 
 def terminal_columns() -> int:
