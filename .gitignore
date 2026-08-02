@@ -1,0 +1,8 @@
+# Python bytecode. Interpreter-version-pinned build artifacts that regenerate
+# on any machine running the scripts -- committed, they conflict on checkout
+# and show up as spurious diffs (and trip the status line's own dirty marker).
+__pycache__/
+*.py[cod]
+
+# macOS Finder metadata.
+.DS_Store

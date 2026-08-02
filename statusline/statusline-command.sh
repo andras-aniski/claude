@@ -255,11 +255,16 @@ build_left() {
 
   if [ -n "$model" ]; then
     acc_add "${GREY}${model}${RESET}" "${#model}"
-    # Absent whenever the model doesn't take a reasoning effort parameter.
-    if [ -n "$effort" ]; then
-      color=$(effort_color "$effort")
-      acc_add " ${ESC}[${color}m(${effort})${RESET}" $((3 + ${#effort}))
-    fi
+  fi
+
+  # Absent whenever the model doesn't take a reasoning effort parameter.
+  # Guarded independently of the model name rather than nested under it, so a
+  # payload carrying one but not the other still renders what it has.
+  if [ -n "$effort" ]; then
+    color=$(effort_color "$effort")
+    if [ -n "$model" ]; then bl_space=" "; else bl_space=""; fi
+    acc_add "${bl_space}${ESC}[${color}m(${effort})${RESET}" \
+      $(( ${#bl_space} + 2 + ${#effort} ))
   fi
 
   if [ -n "$output_style" ] && [ "$output_style" != "default" ]; then
@@ -357,7 +362,10 @@ fi
 # outside a repo, and is absent before the first edit.
 [ -z "$lines_added" ] && lines_added=0
 [ -z "$lines_removed" ] && lines_removed=0
-if [ "$lines_added" -gt 0 ] 2>/dev/null || [ "$lines_removed" -gt 0 ] 2>/dev/null; then
+# positive() rather than `[ "$x" -gt 0 ] 2>/dev/null`: the latter is false for
+# any non-integer, so a float total would silently drop the segment here while
+# the Python version still rendered it.
+if positive "$lines_added" || positive "$lines_removed"; then
   first="${first} ${GREEN}+${lines_added}${RESET} ${RED}-${lines_removed}${RESET}"
 fi
 
@@ -369,29 +377,36 @@ printf '%s\n' "$first"
 # can't help here because stdout is captured rather than connected to the
 # terminal. Reset times are dropped before alignment is given up on, and only
 # a genuinely too-narrow terminal falls back to plain inline flow.
+#
+# Building the group is not free -- it forks awk per gauge and date per reset --
+# and this runs every refreshInterval seconds, so the full version is built once
+# and reused for the emptiness test and the first fit attempt. Only a line that
+# genuinely doesn't fit pays for the second build.
 build_left 1
-if [ "$ACC_N" -eq 0 ] && [ "$right_n" -eq 0 ]; then
+full_s=$ACC_S
+full_n=$ACC_N
+
+if [ "$full_n" -eq 0 ] && [ "$right_n" -eq 0 ]; then
   # Nothing to show, e.g. before the first API response; skip rather than
   # emitting a blank line.
   :
 elif [ "$right_n" -eq 0 ]; then
-  printf '%s\n' "$ACC_S"
+  printf '%s\n' "$full_s"
 elif [ -z "$COLUMNS" ] || ! [ "$COLUMNS" -gt 0 ] 2>/dev/null; then
-  printf '%s%s%s\n' "$ACC_S" "$PIPE" "$right_s"
+  printf '%s%s%s\n' "$full_s" "$PIPE" "$right_s"
 else
   usable=$((COLUMNS - RIGHT_MARGIN))
-  placed=0
-  for resets in 1 0; do
-    build_left "$resets"
+  pad=$((usable - full_n - right_n))
+  if [ "$pad" -ge 1 ]; then
+    printf '%s%*s%s\n' "$full_s" "$pad" '' "$right_s"
+  else
+    build_left 0
     pad=$((usable - ACC_N - right_n))
     if [ "$pad" -ge 1 ]; then
       printf '%s%*s%s\n' "$ACC_S" "$pad" '' "$right_s"
-      placed=1
-      break
+    else
+      # Genuinely too narrow to align: inline flow, still without reset times.
+      printf '%s%s%s\n' "$ACC_S" "$PIPE" "$right_s"
     fi
-  done
-  if [ "$placed" -eq 0 ]; then
-    build_left 0
-    printf '%s%s%s\n' "$ACC_S" "$PIPE" "$right_s"
   fi
 fi

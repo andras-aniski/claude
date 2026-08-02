@@ -176,34 +176,40 @@ def terminal_columns() -> int:
         return 0
 
 
-def compose(build_left, right: Line) -> str:
+def compose(full: Line, build_left, right: Line) -> str:
     """Pins the context gauge to the right edge when it fits.
 
     Claude Code indents the status line by its own built-in spacing, so a line
     of exactly COLUMNS cells overflows the row it's rendered into and gets
     truncated with an ellipsis. RIGHT_MARGIN keeps the content clear of that.
 
-    build_left is a callable rather than a finished Line so the left group can
-    be rebuilt without the rate-limit reset times: they're the least critical
-    thing on the line, and dropping them buys ~20 cells, which keeps the
-    alignment working on narrower terminals instead of overflowing.
+    Takes the already-built left group *and* the callable that produced it:
+    every path needs the full version, and only the narrow ones need it rebuilt
+    without the rate-limit reset times. Those are the least critical thing on
+    the line and dropping them buys ~20 cells, which keeps the alignment working
+    instead of overflowing. Building is not free -- it forks awk per gauge and
+    date per reset -- and this runs every refreshInterval seconds, so the group
+    is built once on the happy path and at most twice ever.
     """
     if not right.width:
-        return build_left(True).styled
+        return full.styled
 
     columns = terminal_columns()
     if not columns:
-        return build_left(True).styled + PIPE + right.styled
+        return full.styled + PIPE + right.styled
 
     usable = columns - RIGHT_MARGIN
-    for with_resets in (True, False):
-        left = build_left(with_resets)
-        pad = usable - left.width - right.width
-        if pad >= 1:
-            return left.styled + ' ' * pad + right.styled
+    pad = usable - full.width - right.width
+    if pad >= 1:
+        return full.styled + ' ' * pad + right.styled
+
+    trimmed = build_left(False)
+    pad = usable - trimmed.width - right.width
+    if pad >= 1:
+        return trimmed.styled + ' ' * pad + right.styled
 
     # Genuinely too narrow to align: inline flow, still without reset times.
-    return build_left(False).styled + PIPE + right.styled
+    return trimmed.styled + PIPE + right.styled
 
 
 def git_segment(cwd: str) -> str:
@@ -322,10 +328,14 @@ def main() -> None:
 
         if model:
             left.add(f'{GREY}{model}{RESET}', model)
-            # Absent when the model takes no reasoning effort parameter.
-            if effort:
-                color = EFFORT_COLORS.get(effort, '0;90')
-                left.add(f' \033[{color}m({effort}){RESET}', f' ({effort})')
+
+        # Absent when the model takes no reasoning effort parameter. Guarded
+        # independently of the model name rather than nested under it, so a
+        # payload carrying one but not the other still renders what it has.
+        if effort:
+            color = EFFORT_COLORS.get(effort, '0;90')
+            space = ' ' if model else ''
+            left.add(f'{space}\033[{color}m({effort}){RESET}', f'{space}({effort})')
 
         if style and style != 'default':
             left.sep()
@@ -354,9 +364,11 @@ def main() -> None:
         gauge(right, 'ctx', ctx_used)
 
     # Skip the line entirely rather than emitting a blank one, e.g. before the
-    # first API response of a session.
-    if build_left(True).width or right.width:
-        print(compose(build_left, right))
+    # first API response of a session. The group built for that test is the
+    # same one compose() needs, so it's passed along rather than rebuilt.
+    full = build_left(True)
+    if full.width or right.width:
+        print(compose(full, build_left, right))
 
 
 if __name__ == '__main__':
