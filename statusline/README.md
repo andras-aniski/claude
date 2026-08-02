@@ -125,6 +125,19 @@ algorithm (`gauge`, `center`, the fit loop, porcelain-v2 parsing, duration
 formatting) exists twice. **Any change to one has to be mirrored in the other
 and the two re-checked for identical output** — they have drifted before.
 
+`parity-test.sh` does that re-checking. It feeds both implementations the same
+18 payloads at four terminal widths and asserts their stdout is byte-identical
+and neither writes to stderr:
+
+```bash
+bash statusline/parity-test.sh   # -> PASS -- 72 cases, ...
+```
+
+The payload matrix is mostly regressions: reset timestamps in milliseconds or
+as ISO strings, `0` percentages, float line counts, reasoning effort without a
+model name. Run it after touching either script. It's a development aid —
+`install.py` doesn't deploy it.
+
 ## Python install (cross-platform)
 
 ### Requirements
