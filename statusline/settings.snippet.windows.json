@@ -1,6 +1,7 @@
 {
   "statusLine": {
     "type": "command",
-    "command": "cmd /c \"%USERPROFILE%\\.claude\\statusline-launcher.cmd\""
+    "command": "cmd /c \"%USERPROFILE%\\.claude\\statusline-launcher.cmd\"",
+    "refreshInterval": 10
   }
 }

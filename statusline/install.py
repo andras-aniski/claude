@@ -28,7 +28,9 @@ def copy_file(src: Path, dst: Path) -> None:
 
 def merge_settings(dst_dir: Path, command: str) -> None:
     settings_path = dst_dir / 'settings.json'
-    status_line = {"type": "command", "command": command}
+    # refreshInterval keeps the elapsed-time segment ticking while the session
+    # is idle; without it the status line only re-runs on events.
+    status_line = {"type": "command", "command": command, "refreshInterval": 10}
 
     if settings_path.exists():
         current = json.loads(settings_path.read_text(encoding='utf-8'))
