@@ -103,7 +103,7 @@ you'd rather the script only run on events.
 | File | Platform | Requirements |
 |---|---|---|
 | `statusline.py` + launcher | Linux, Mac, Windows | Python 3.8+ |
-| `statusline-command.sh` | Linux, Mac | bash, jq, awk, GNU date |
+| `statusline-command.sh` | Linux, Mac | bash, jq, awk |
 
 The Python implementation is cross-platform and has no external dependencies
 beyond the Python standard library. The bash implementation is retained for
@@ -181,10 +181,12 @@ in place of the normal output so you know exactly what to fix.
 
 ### Requirements
 
-- `bash`, `jq`, `awk`, GNU `date` (the `date -d "@<epoch>"` syntax used for
-  reset times is a GNU coreutils feature — it will not work with the BSD
-  `date` shipped on macOS; install GNU coreutils, e.g. via `brew install
-  coreutils` and use `gdate`, if you need this on macOS).
+- `bash`, `jq`, `awk`.
+
+Formatting an epoch is the one place the two `date` implementations disagree —
+GNU spells it `date -d "@<epoch>"`, the BSD `date` shipped on macOS rejects
+`-d` outright and spells it `date -r <epoch>`. The script probes for this once
+at startup (`epoch_fmt`), so reset times render on both.
 
 ### Install
 

@@ -138,6 +138,16 @@ positive() {
   awk -v n="$1" 'BEGIN { exit !(n > 0) }'
 }
 
+# Formats an epoch as a local time. GNU date spells this `-d @<epoch>`; the
+# BSD date shipped on macOS rejects -d outright and spells it `-r <epoch>`.
+# Probed once at startup rather than per call, and defined as a function so
+# format_reset stays free of the platform split.
+if date -d @0 '+%s' >/dev/null 2>&1; then
+  epoch_fmt() { LC_TIME=C date -d "@$1" "+$2"; }
+else
+  epoch_fmt() { LC_TIME=C date -r "$1" "+$2"; }
+fi
+
 # Formats a Unix timestamp as a short reset time. Shows just "HH:MM" if
 # the reset falls within the next 24h, otherwise "Day HH:MM".
 #
@@ -158,14 +168,14 @@ format_reset() {
 
   fr_diff=$((fr_ts - $(date +%s)))
   if [ "$fr_diff" -lt 86400 ]; then
-    LC_TIME=C date -d "@$fr_ts" '+%H:%M' 2>/dev/null
+    epoch_fmt "$fr_ts" '%H:%M' 2>/dev/null
   else
-    LC_TIME=C date -d "@$fr_ts" '+%a %H:%M' 2>/dev/null
+    epoch_fmt "$fr_ts" '%a %H:%M' 2>/dev/null
   fi
 }
 
-# Formats a millisecond duration as 45s / 12m / 1h 5m. Pure arithmetic (no
-# `date -d`), so unlike format_reset it works on BSD/macOS too.
+# Formats a millisecond duration as 45s / 12m / 1h 5m. Pure arithmetic, so it
+# needs no `date` at all and sidesteps the GNU/BSD split entirely.
 format_duration() {
   total=$(( ${1%%.*} / 1000 ))
   if [ "$total" -lt 60 ]; then
@@ -228,7 +238,7 @@ gauge() {
 
   if [ -n "$g_reset" ]; then
     g_when=$(format_reset "$g_reset")
-    # Empty on macOS, where `date -d` is unsupported; skip rather than pad.
+    # Empty when the payload timestamp is unusable; skip rather than pad.
     [ -n "$g_when" ] && acc_add " ${GREY}${g_when}${RESET}" $((1 + ${#g_when}))
   fi
 }
