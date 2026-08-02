@@ -6,12 +6,16 @@ the lines the session has changed. Line 2 is *what the session is spending*:
 model + reasoning effort, output style, and the 5-hour / weekly rate-limit
 gauges, with the context window gauge pinned to the right edge.
 
-Example output:
+Example output, in a 100-column terminal:
 
 ```
 MemButler 27m  |  main ● ↑2 ↓1 +312 -47
-Sonnet 4.6 (high)  |  5h   72%     02:10  7d   91%     Fri 08:00      ctx   43%
+Sonnet 4.6 (high)  |  5h    72%     02:10  7d    91%     Fri 08:00                ctx    43%
 ```
+
+The gap before `ctx` is the only part of that which isn't fixed: it's whatever
+padding right-aligns the context gauge, so it grows and shrinks with the
+terminal width while everything to its left stays put.
 
 Each gauge is a 10-cell field with its percentage centred inside it. The
 filled portion is drawn as a colored *background* running under the number,
@@ -40,7 +44,8 @@ Line 2, left group:
   including mid-session `/effort` changes, and is colored by level: **grey**
   (low), **green** (medium), **yellow** (high), **red** (xhigh), **magenta**
   (max). Ultracode reports as `xhigh`. Absent for models that don't take a
-  reasoning effort parameter.
+  reasoning effort parameter — but not conditional on the model name, which is
+  shown or omitted independently.
 - The output style is shown only when it isn't `default`.
 - `5h` / `7d` — percentage used of the 5-hour and weekly (7-day) rate-limit
   windows, followed by the local time (or day + time, if more than 24h away)
@@ -78,12 +83,16 @@ near the top of each script (default `4`, one cell of headroom on top of that)
 keeps the content clear of the edge — raise it if a trailing `…` ever
 reappears, drop it to `3` to sit flush against the last usable column.
 
-As the terminal narrows, the line degrades in two steps before it gives up:
+As the terminal narrows, line 2 degrades in one step before it gives up:
 
 1. The rate-limit reset times are dropped (they're the least critical thing on
    the line and buy back ~20 cells), keeping the context gauge aligned.
-2. Below that, the line falls back to plain inline flow separated by `|`, and
-   wraps rather than truncating.
+2. Below that there's no width management left: the groups are concatenated
+   with a `|` between them and whatever that comes to is printed, so the result
+   is subject to the same truncation as any other over-long line.
+
+Line 1 is never width-managed at all — it's built in one pass with no cell
+accounting, since nothing on it is aligned.
 
 Spacing carries the grouping and widens with conceptual distance: 1 cell
 inside a gauge, 2 between the related 5h/7d gauges, and 5 across concepts (the
@@ -93,10 +102,10 @@ break, which is backwards.
 Line 2 is dropped entirely rather than printed blank when there's nothing to
 put on it — before the first API response of a session, for instance.
 
-The settings snippets set `"refreshInterval": 10`, which re-runs the script
-every 10 seconds in addition to the event-driven updates. Without it the
-elapsed-time segment freezes whenever the session sits idle. Drop the key if
-you'd rather the script only run on events.
+`install.py` and the settings snippets set `"refreshInterval": 10`, which
+re-runs the script every 10 seconds in addition to the event-driven updates.
+Without it the elapsed-time segment freezes whenever the session sits idle.
+Drop the key if you'd rather the script only run on events.
 
 ## Two implementations
 
@@ -105,9 +114,16 @@ you'd rather the script only run on events.
 | `statusline.py` + launcher | Linux, Mac, Windows | Python 3.8+ |
 | `statusline-command.sh` | Linux, Mac | bash, jq, awk |
 
-The Python implementation is cross-platform and has no external dependencies
-beyond the Python standard library. The bash implementation is retained for
-environments where bash tooling is preferred.
+The Python implementation is the one to use: it's cross-platform and needs
+nothing beyond the standard library. The bash implementation exists for hosts
+without a usable Python — it is strictly the heavier of the two, since it needs
+`jq` and `awk` on top of a shell.
+
+It is also a near-verbatim second copy of the same ~350 lines: every constant
+(`RIGHT_MARGIN`, `BAR_WIDTH`, the 60/85 thresholds, the effort colors) and every
+algorithm (`gauge`, `center`, the fit loop, porcelain-v2 parsing, duration
+formatting) exists twice. **Any change to one has to be mirrored in the other
+and the two re-checked for identical output** — they have drifted before.
 
 ## Python install (cross-platform)
 
@@ -122,41 +138,44 @@ python3 --version   # Linux / Mac
 python --version    # Windows
 ```
 
-### Linux / Mac
+### Install
 
-1. Copy the script and launcher into place:
+```sh
+python statusline/install.py
+```
 
-   ```bash
-   cp statusline.py ~/.claude/statusline.py
-   cp statusline-launcher.sh ~/.claude/statusline-launcher.sh
-   chmod +x ~/.claude/statusline-launcher.sh
-   ```
+This copies `statusline.py` and the platform's launcher into `~/.claude`
+(`%USERPROFILE%\.claude` on Windows), marks the launcher executable, and merges
+a `statusLine` key into `settings.json` pointing at it — prompting first if one
+is already there. Restart Claude Code for it to take effect.
 
-2. Wire it up in `~/.claude/settings.json`. If that file doesn't exist yet,
-   copy `settings.snippet.linux.json` to `~/.claude/settings.json`. Otherwise
-   merge in the `statusLine` key:
+### Installing by hand
 
-   ```bash
-   jq -s '.[0] * .[1]' ~/.claude/settings.json settings.snippet.linux.json \
-     > /tmp/settings.json && mv /tmp/settings.json ~/.claude/settings.json
-   ```
+The installer is the recommended path; it's the only one that sets
+`refreshInterval`, which the elapsed-time segment needs (see above). If you'd
+rather do it manually:
 
-3. Restart Claude Code for the status line to take effect.
+**Linux / Mac**
 
-### Windows
+```bash
+cp statusline.py statusline-launcher.sh ~/.claude/
+chmod +x ~/.claude/statusline-launcher.sh
+jq -s '.[0] * .[1]' ~/.claude/settings.json settings.snippet.linux.json \
+  > /tmp/settings.json && mv /tmp/settings.json ~/.claude/settings.json
+```
 
-1. Copy the script and launcher into place:
+**Windows**
 
-   ```powershell
-   Copy-Item statusline.py "$env:USERPROFILE\.claude\statusline.py"
-   Copy-Item statusline-launcher.cmd "$env:USERPROFILE\.claude\statusline-launcher.cmd"
-   ```
+```powershell
+Copy-Item statusline.py,statusline-launcher.cmd "$env:USERPROFILE\.claude\"
+```
 
-2. Merge the `statusLine` key from `settings.snippet.windows.json` into
-   `%USERPROFILE%\.claude\settings.json`. If the settings file doesn't exist
-   yet, copy `settings.snippet.windows.json` directly.
+Then merge the `statusLine` key from `settings.snippet.windows.json` into
+`%USERPROFILE%\.claude\settings.json`.
 
-3. Restart Claude Code for the status line to take effect.
+In both cases, if `settings.json` doesn't exist yet, copy the snippet to it
+directly instead of merging. The launcher resolves `statusline.py` relative to
+itself, so the two just have to stay in the same directory.
 
 If `python` is not found on your PATH but `py` (the Python Launcher for
 Windows) is, change `python` to `py` in `statusline-launcher.cmd`.
@@ -189,6 +208,8 @@ GNU spells it `date -d "@<epoch>"`, the BSD `date` shipped on macOS rejects
 at startup (`epoch_fmt`), so reset times render on both.
 
 ### Install
+
+`install.py` only installs the Python implementation, so this one is by hand:
 
 1. Copy the script into place:
 
