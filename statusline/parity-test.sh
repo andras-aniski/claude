@@ -31,8 +31,8 @@ PAST=$((NOW - 100))        # payload still says warm, clock says cold
 
 # name|payload. The awkward-looking ones are all regressions: a reset time in
 # milliseconds or as an ISO string used to raise/print errors, a 0 percentage
-# has to render (it is a real state, not an absent field), float churn used to
-# be dropped by bash only, and effort without a model used to render nothing.
+# has to render (it is a real state, not an absent field), and effort without
+# a model used to render nothing.
 # The cache-* ones cover each state of the line 1 cache segment, plus malformed
 # values that decimal() and whole() have to reject identically.
 payloads=(
@@ -48,9 +48,6 @@ payloads=(
   'reset-string|{"rate_limits":{"five_hour":{"used_percentage":72,"resets_at":"2026-08-03T10:00:00Z"}}}'
   'reset-zero|{"rate_limits":{"five_hour":{"used_percentage":72,"resets_at":0}}}'
   'pct-zero|{"rate_limits":{"five_hour":{"used_percentage":0}},"context_window":{"used_percentage":0}}'
-  'churn-int|{"cost":{"total_lines_added":312,"total_lines_removed":47}}'
-  'churn-float|{"cost":{"total_lines_added":312.0,"total_lines_removed":47.0}}'
-  'churn-zero|{"cost":{"total_lines_added":0,"total_lines_removed":0}}'
   'duration|{"cost":{"total_duration_ms":1620000}}'
   'ctx-only|{"context_window":{"used_percentage":43}}'
   'cache-empty|{"prompt_cache":{}}'

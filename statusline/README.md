@@ -1,16 +1,15 @@
 # Claude Code status line
 
 A custom status line for Claude Code, in two lines. Line 1 is *where the work
-is happening*: directory, session duration, git branch and dirty state, and
-the lines the session has changed, with the prompt cache state pinned to the
-right edge. Line 2 is *what the session is spending*:
+is happening*: directory, session duration, and git branch and dirty state,
+with the prompt cache state pinned to the right edge. Line 2 is *what the session is spending*:
 model + reasoning effort, output style, and the 5-hour / weekly rate-limit
 gauges, with the context window gauge pinned to the right edge.
 
 Example output, in a 100-column terminal:
 
 ```
-MemButler 27m  |  main ● ↑2 ↓1 +312 -47                         cache 91%  2 misses  25m
+MemButler 27m  |  main ● ↑2 ↓1                                  cache 91%  2 misses  25m
 Sonnet 4.6 (high)  |  5h    72%     02:10  7d    91%     Fri 08:00                ctx    43%
 ```
 
@@ -36,9 +35,6 @@ Line 1:
   its upstream. It's built from a single `git status --porcelain=v2 --branch`
   call (no separate rev-parse/branch/rev-list calls), since the script runs on
   every status line refresh.
-- `+312 -47` — lines added and removed across the session. It sits with the
-  branch because both describe the working tree, stands alone outside a repo,
-  and is absent before the first edit.
 
 Line 1, right group — the prompt cache of the main conversation, from the
 payload's `prompt_cache` object:
@@ -93,6 +89,11 @@ legible against it.
 `cost.total_cost_usd` is available in the payload but deliberately not shown:
 it's an estimate of what the tokens would have cost at API rates, which isn't
 money spent on a subscription plan. The 5h/7d gauges are the real constraint.
+
+`cost.total_lines_added` / `total_lines_removed` are left out for a similar
+reason: they count Claude's edits across the whole session, keep growing after
+a commit, and include files outside the repo, so they say nothing about the
+working tree. The `●` dirty marker is the signal for local changes.
 
 Both right groups are aligned using the `COLUMNS` environment variable, which
 Claude Code sets before running the script (`tput cols` can't help, because
@@ -153,19 +154,19 @@ formatting) exists twice. **Any change to one has to be mirrored in the other
 and the two re-checked for identical output** — they have drifted before.
 
 `parity-test.sh` does that re-checking. It feeds both implementations the same
-31 payloads at four terminal widths and asserts their stdout is byte-identical
+28 payloads at four terminal widths and asserts their stdout is byte-identical
 and neither writes to stderr:
 
 ```bash
-bash statusline/parity-test.sh   # -> PASS -- 124 cases, ...
+bash statusline/parity-test.sh   # -> PASS -- 112 cases, ...
 ```
 
 The payload matrix is mostly regressions: reset timestamps in milliseconds or
-as ISO strings, `0` percentages, float line counts, reasoning effort without a
-model name. The `cache-*` payloads cover each state of the cache group, plus
-malformed values that both scripts' `decimal()` / `whole()` helpers have to
-reject identically. Run it after touching either script. It's a development aid —
-`install.py` doesn't deploy it.
+as ISO strings, `0` percentages, reasoning effort without a model name. The
+`cache-*` payloads cover each state of the cache group, plus malformed values
+that both scripts' `decimal()` / `whole()` helpers have to reject identically.
+Run it after touching either script. It's a development aid — `install.py`
+doesn't deploy it.
 
 ## Python install (cross-platform)
 

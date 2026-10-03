@@ -388,10 +388,11 @@ def main() -> None:
     # cost.total_cost_usd is deliberately unused: it's an estimate of what the
     # tokens would have cost at API rates, which isn't money spent on a
     # subscription plan. The 5h/7d gauges are the real constraint.
-    cost     = data.get('cost') or {}
-    duration = cost.get('total_duration_ms')
-    added    = cost.get('total_lines_added') or 0
-    removed  = cost.get('total_lines_removed') or 0
+    #
+    # cost.total_lines_added/removed are unused too: they count Claude's edits
+    # across the whole session, survive commits, and include files outside the
+    # repo, so they say nothing about the working tree. git's dirty marker does.
+    duration = (data.get('cost') or {}).get('total_duration_ms')
 
     ctx_used = (data.get('context_window') or {}).get('used_percentage')
 
@@ -405,8 +406,8 @@ def main() -> None:
     # --- line 1: where the work is happening --------------------------------
     #
     # Location and working-tree state: directory, how long this session has
-    # been going, the branch, and what it has changed -- with the prompt cache
-    # pinned to the right edge, directly above the context gauge.
+    # been going, and the branch -- with the prompt cache pinned to the right
+    # edge, directly above the context gauge.
     first = Line()
     first.add(f'{WHITE}{directory}{RESET}', directory)
 
@@ -420,12 +421,6 @@ def main() -> None:
     if branch.width:
         first.add(PIPE, PIPE_PLAIN)
         first.extend(branch)
-
-    # Churn sits with the branch: both describe the working tree. It stands
-    # alone outside a repo, and is absent before the first edit.
-    if added or removed:
-        churn = f' +{added} -{removed}'
-        first.add(f' {GREEN}+{added}{RESET} {RED}-{removed}{RESET}', churn)
 
     cache = cache_segment(data.get('prompt_cache'))
     if not cache.width:

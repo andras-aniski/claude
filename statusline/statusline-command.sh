@@ -3,9 +3,9 @@
 #   PS1='\[\033[01;32m\][\u@\h\[\033[01;37m\] \W\[\033[01;32m\]]\$\[\033[00m\] '
 # Trailing "$" prompt character removed per status line conventions.
 #
-# Line 1 is where the work is happening: dir + elapsed time, git branch /
-# dirty state / ahead-behind, and the session's lines changed, with the prompt
-# cache state pushed against the right edge above the context gauge. Line 2 is what
+# Line 1 is where the work is happening: dir + elapsed time and git branch /
+# dirty state / ahead-behind, with the prompt cache state pushed against the
+# right edge above the context gauge. Line 2 is what
 # the session is spending: model + reasoning effort, output style, and the
 # 5-hour / 7-day rate limit gauges, with the context window gauge pushed flush
 # against the right edge when it fits.
@@ -32,12 +32,16 @@ input=$(cat)
 # the tokens would have cost at API rates, which isn't money spent on a
 # subscription plan. The 5h/7d gauges are the real constraint.
 #
+# .cost.total_lines_added/removed are not extracted either: they count Claude's
+# edits across the whole session, survive commits, and include files outside
+# the repo, so they say nothing about the working tree. git's dirty marker does.
+#
 # The prompt_cache booleans are compared against true/false rather than run
 # through `//`, which would turn false into "". Anything but an object there is
 # treated as absent, so a malformed value costs the cache segment rather than
 # failing the whole jq program.
 IFS=$'\037' read -r cwd_input model effort output_style \
-  duration_ms lines_added lines_removed \
+  duration_ms \
   ctx_used five_hour five_hour_reset seven_day seven_day_reset \
   pc_present pc_unobserved pc_warm pc_ttl pc_expires pc_ratio pc_misses \
   pc_recache <<EOF
@@ -48,8 +52,6 @@ $(echo "$input" | jq -r '
   (.effort.level // ""),
   (.output_style.name // ""),
   (.cost.total_duration_ms // ""),
-  (.cost.total_lines_added // ""),
-  (.cost.total_lines_removed // ""),
   (.context_window.used_percentage // ""),
   (.rate_limits.five_hour.used_percentage // ""),
   (.rate_limits.five_hour.resets_at // ""),
@@ -78,9 +80,9 @@ ESC=$'\033'
 CYAN=$'\033[1;36m'    # separators / structure
 WHITE=$'\033[0;37m'   # primary text (dir, bar labels)
 GREY=$'\033[0;90m'    # secondary text (model name, session name, cost)
-GREEN=$'\033[1;32m'   # lines added, warm cache countdown
+GREEN=$'\033[1;32m'   # warm cache countdown
 YELLOW=$'\033[1;33m'  # dirty marker, cache misses, cache nearly cold
-RED=$'\033[1;31m'     # lines removed, cold cache
+RED=$'\033[1;31m'     # cold cache
 RESET=$'\033[0m'
 
 # Spacing carries the grouping, so it widens with conceptual distance: 1 cell
@@ -473,8 +475,8 @@ align() {
 # --- line 1: where the work is happening -------------------------------------
 #
 # Location and working-tree state: directory, how long this session has been
-# going, the branch, and what it has changed -- with the prompt cache pinned to
-# the right edge, directly above the context gauge. Directory and branch names
+# going, and the branch -- with the prompt cache pinned to the right edge,
+# directly above the context gauge. Directory and branch names
 # are counted with ${#}, so a wide character in one shifts the alignment.
 first="${WHITE}${dir}${RESET}"
 first_n=${#dir}
@@ -490,18 +492,6 @@ fi
 if [ -n "$git_line" ]; then
   first="${first}${PIPE}${git_line}"
   first_n=$((first_n + PIPE_WIDTH + git_n))
-fi
-
-# Churn sits with the branch: both describe the working tree. It stands alone
-# outside a repo, and is absent before the first edit.
-[ -z "$lines_added" ] && lines_added=0
-[ -z "$lines_removed" ] && lines_removed=0
-# positive() rather than `[ "$x" -gt 0 ] 2>/dev/null`: the latter is false for
-# any non-integer, so a float total would silently drop the segment here while
-# the Python version still rendered it.
-if positive "$lines_added" || positive "$lines_removed"; then
-  first="${first} ${GREEN}+${lines_added}${RESET} ${RED}-${lines_removed}${RESET}"
-  first_n=$((first_n + 4 + ${#lines_added} + ${#lines_removed}))
 fi
 
 if [ "$cache_n" -eq 0 ]; then

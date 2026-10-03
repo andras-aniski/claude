@@ -7,8 +7,8 @@ machines.
 ## Contents
 
 - [`statusline/`](statusline/README.md) — custom status line in two lines:
-  directory, session duration, branch/dirty/ahead-behind and lines changed on
-  the first, then model and reasoning effort, output style, 5-hour/weekly
+  directory, session duration and branch/dirty/ahead-behind on the first, with
+  a right-aligned prompt-cache segment, then model and reasoning effort, output style, 5-hour/weekly
   rate-limit gauges and a right-aligned context-window gauge on the second.
   See its README for install instructions.
 - [`session-cleanup/`](session-cleanup/README.md) — list and delete the past
