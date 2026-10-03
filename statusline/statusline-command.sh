@@ -4,7 +4,8 @@
 # Trailing "$" prompt character removed per status line conventions.
 #
 # Line 1 is where the work is happening: dir + elapsed time, git branch /
-# dirty state / ahead-behind, and the session's lines changed. Line 2 is what
+# dirty state / ahead-behind, and the session's lines changed, with the prompt
+# cache state pushed against the right edge above the context gauge. Line 2 is what
 # the session is spending: model + reasoning effort, output style, and the
 # 5-hour / 7-day rate limit gauges, with the context window gauge pushed flush
 # against the right edge when it fits.
@@ -30,10 +31,18 @@ input=$(cat)
 # .cost.total_cost_usd is deliberately not extracted: it's an estimate of what
 # the tokens would have cost at API rates, which isn't money spent on a
 # subscription plan. The 5h/7d gauges are the real constraint.
+#
+# The prompt_cache booleans are compared against true/false rather than run
+# through `//`, which would turn false into "". Anything but an object there is
+# treated as absent, so a malformed value costs the cache segment rather than
+# failing the whole jq program.
 IFS=$'\037' read -r cwd_input model effort output_style \
   duration_ms lines_added lines_removed \
-  ctx_used five_hour five_hour_reset seven_day seven_day_reset <<EOF
-$(echo "$input" | jq -r '[
+  ctx_used five_hour five_hour_reset seven_day seven_day_reset \
+  pc_present pc_unobserved pc_warm pc_ttl pc_expires pc_ratio pc_misses \
+  pc_recache <<EOF
+$(echo "$input" | jq -r '
+(.prompt_cache | if type == "object" then . else {} end) as $pc | [
   (.workspace.current_dir // ""),
   (.model.display_name // ""),
   (.effort.level // ""),
@@ -45,7 +54,15 @@ $(echo "$input" | jq -r '[
   (.rate_limits.five_hour.used_percentage // ""),
   (.rate_limits.five_hour.resets_at // ""),
   (.rate_limits.seven_day.used_percentage // ""),
-  (.rate_limits.seven_day.resets_at // "")
+  (.rate_limits.seven_day.resets_at // ""),
+  (if ($pc | length) > 0 then "1" else "" end),
+  ($pc.caching_observed == false),
+  ($pc.warm == true),
+  ($pc.ttl // ""),
+  ($pc.expires_at // ""),
+  ($pc.hit_ratio // ""),
+  ($pc.misses // ""),
+  ($pc.recache_tokens_if_cold // "")
 ] | map(tostring | gsub("\\s"; " ")) | join("\u001f")')
 EOF
 
@@ -61,8 +78,9 @@ ESC=$'\033'
 CYAN=$'\033[1;36m'    # separators / structure
 WHITE=$'\033[0;37m'   # primary text (dir, bar labels)
 GREY=$'\033[0;90m'    # secondary text (model name, session name, cost)
-GREEN=$'\033[1;32m'   # lines added
-RED=$'\033[1;31m'     # lines removed
+GREEN=$'\033[1;32m'   # lines added, warm cache countdown
+YELLOW=$'\033[1;33m'  # dirty marker, cache misses, cache nearly cold
+RED=$'\033[1;31m'     # lines removed, cold cache
 RESET=$'\033[0m'
 
 # Spacing carries the grouping, so it widens with conceptual distance: 1 cell
@@ -174,6 +192,39 @@ format_reset() {
   fi
 }
 
+# True when a payload value reads as plain digits with an optional fraction:
+# no sign, no exponent. Mirrors decimal() in the Python version exactly, so the
+# two degrade identically on an odd payload.
+decimal() {
+  case "$1" in
+    ''|*[!0-9.]*|.*|*.|*.*.*) return 1 ;;
+  esac
+}
+
+# Prints the integer part of a decimal() value, or nothing (and fails) if it
+# isn't one or exceeds the limit in $2. The 15-digit cap stops a longer string
+# from overflowing shell arithmetic before the comparison; 10# stops a leading
+# zero from being read as octal.
+whole() {
+  decimal "$1" || return 1
+  wh_n=${1%%.*}
+  [ "${#wh_n}" -le 15 ] || return 1
+  wh_n=$((10#$wh_n))
+  [ "$wh_n" -le "$2" ] || return 1
+  echo "$wh_n"
+}
+
+# Formats a token count as 850 / 45k / 1.2M.
+format_tokens() {
+  if [ "$1" -lt 1000 ]; then
+    echo "$1"
+  elif [ "$1" -lt 999500 ]; then
+    echo "$(( ($1 + 500) / 1000 ))k"
+  else
+    LC_NUMERIC=C awk -v n="$1" 'BEGIN { printf "%.1fM\n", n / 1000000 }'
+  fi
+}
+
 # Formats a millisecond duration as 45s / 12m / 1h 5m. Pure arithmetic, so it
 # needs no `date` at all and sidesteps the GNU/BSD split entirely.
 format_duration() {
@@ -190,7 +241,7 @@ format_duration() {
   echo "$((minutes / 60))h $((minutes % 60))m"
 }
 
-# --- line 2 accumulators -----------------------------------------------------
+# --- accumulators -------------------------------------------------------------
 #
 # Right-alignment needs to know how many terminal cells a group occupies, so
 # each group is built as a (styled string, visible width) pair. Width is
@@ -303,6 +354,57 @@ acc_reset
 right_s=$ACC_S
 right_n=$ACC_N
 
+# --- line 1 right group: prompt cache ------------------------------------------
+#
+# 'cache 91%  2 misses  42m' while warm, 'cache 91%  cold 45k' once not. The
+# percentage is the session's hit ratio, the misses count only appears once
+# there is one, and the countdown is how long until the cached prefix expires
+# -- yellow in the last fifth of its TTL. Once cold, the countdown gives way to
+# what the next request will have to re-cache.
+#
+# Empty when the payload has no prompt_cache yet (before the first API
+# response) or caching isn't being reported at all.
+acc_reset
+if [ -n "$pc_present" ] && [ "$pc_unobserved" != "true" ]; then
+  acc_add "${WHITE}cache${RESET}" 5
+
+  if decimal "$pc_ratio"; then
+    pc_pct=$(LC_NUMERIC=C awk -v r="$pc_ratio" 'BEGIN { printf "%d", r * 100 + 0.5 }')
+    acc_add " ${GREY}${pc_pct}%${RESET}" $((2 + ${#pc_pct}))
+  fi
+
+  pc_n=$(whole "$pc_misses" 1000000000)
+  if [ -n "$pc_n" ] && [ "$pc_n" -gt 0 ]; then
+    if [ "$pc_n" -eq 1 ]; then pc_word="miss"; else pc_word="misses"; fi
+    pc_text="${pc_n} ${pc_word}"
+    acc_add "  ${YELLOW}${pc_text}${RESET}" $((2 + ${#pc_text}))
+  fi
+
+  # expires_at can lag the clock by up to a refresh interval, so a past expiry
+  # reads as cold even while the payload still says warm.
+  pc_left=""
+  pc_at=$(whole "$pc_expires" 253402300799) && pc_left=$((pc_at - $(date +%s)))
+
+  if [ "$pc_warm" = "true" ] && { [ -z "$pc_left" ] || [ "$pc_left" -gt 0 ]; }; then
+    if [ -n "$pc_left" ]; then
+      if [ "$pc_ttl" = "1h" ]; then pc_ttl_s=3600; else pc_ttl_s=300; fi
+      if [ $((pc_left * 5)) -lt "$pc_ttl_s" ]; then pc_color=$YELLOW; else pc_color=$GREEN; fi
+      pc_when=$(format_duration $((pc_left * 1000)))
+      acc_add "  ${pc_color}${pc_when}${RESET}" $((2 + ${#pc_when}))
+    fi
+  else
+    acc_add "  ${RED}cold${RESET}" 6
+    pc_n=$(whole "$pc_recache" 1000000000000000)
+    if [ -n "$pc_n" ] && [ "$pc_n" -gt 0 ]; then
+      pc_tokens=$(format_tokens "$pc_n")
+      acc_add " ${GREY}${pc_tokens}${RESET}" $((1 + ${#pc_tokens}))
+    fi
+  fi
+fi
+
+cache_s=$ACC_S
+cache_n=$ACC_N
+
 # Single git invocation gathers branch, ahead/behind, and dirty state at
 # once (rather than separate rev-parse/branch/rev-list/status calls), since
 # this script runs on every status line refresh. Empty stdout means either
@@ -310,6 +412,7 @@ right_n=$ACC_N
 git_status=$(git -C "$cwd_input" status --porcelain=v2 --branch 2>/dev/null)
 
 git_line=""
+git_n=0
 if [ -n "$git_status" ]; then
   branch=""
   ab=""
@@ -329,34 +432,65 @@ if [ -n "$git_status" ]; then
 
   if [ -n "$branch" ]; then
     git_line="${WHITE}${branch}${RESET}"
-    [ "$dirty" -eq 1 ] && git_line="${git_line} ${ESC}[1;33m●${RESET}"
+    git_n=${#branch}
+    if [ "$dirty" -eq 1 ]; then
+      git_line="${git_line} ${YELLOW}●${RESET}"
+      git_n=$((git_n + 2))
+    fi
 
     if [ -n "$ab" ]; then
       ahead="${ab%% *}"
       behind="${ab#* }"
       ahead="${ahead#+}"
       behind="${behind#-}"
-      [ "$ahead" -gt 0 ] 2>/dev/null && git_line="${git_line} ${GREY}↑${ahead}${RESET}"
-      [ "$behind" -gt 0 ] 2>/dev/null && git_line="${git_line} ${GREY}↓${behind}${RESET}"
+      if [ "$ahead" -gt 0 ] 2>/dev/null; then
+        git_line="${git_line} ${GREY}↑${ahead}${RESET}"
+        git_n=$((git_n + 2 + ${#ahead}))
+      fi
+      if [ "$behind" -gt 0 ] 2>/dev/null; then
+        git_line="${git_line} ${GREY}↓${behind}${RESET}"
+        git_n=$((git_n + 2 + ${#behind}))
+      fi
     fi
   fi
 fi
 
+# Prints left ($1, $2 cells) padded so right ($3, $4 cells) ends at the usable
+# edge. Fails without printing when it can't be aligned: COLUMNS is missing, or
+# the two don't fit side by side.
+#
+# Claude Code exports COLUMNS before running the status line; `tput cols`
+# can't help here because stdout is captured rather than connected to the
+# terminal.
+have_columns() { [ -n "$COLUMNS" ] && [ "$COLUMNS" -gt 0 ] 2>/dev/null; }
+align() {
+  have_columns || return 1
+  al_pad=$((COLUMNS - RIGHT_MARGIN - $2 - $4))
+  [ "$al_pad" -ge 1 ] || return 1
+  printf '%s%*s%s\n' "$1" "$al_pad" '' "$3"
+}
+
 # --- line 1: where the work is happening -------------------------------------
 #
 # Location and working-tree state: directory, how long this session has been
-# going, the branch, and what it has changed. Nothing here is aligned, so it
-# needs no width accounting.
+# going, the branch, and what it has changed -- with the prompt cache pinned to
+# the right edge, directly above the context gauge. Directory and branch names
+# are counted with ${#}, so a wide character in one shifts the alignment.
 first="${WHITE}${dir}${RESET}"
+first_n=${#dir}
 
 # Elapsed time rides directly on the directory rather than taking its own
 # separator -- it reads as "how long have I been in here".
 if positive "$duration_ms"; then
   elapsed=$(format_duration "$duration_ms")
   first="${first} ${GREY}${elapsed}${RESET}"
+  first_n=$((first_n + 1 + ${#elapsed}))
 fi
 
-[ -n "$git_line" ] && first="${first}${PIPE}${git_line}"
+if [ -n "$git_line" ]; then
+  first="${first}${PIPE}${git_line}"
+  first_n=$((first_n + PIPE_WIDTH + git_n))
+fi
 
 # Churn sits with the branch: both describe the working tree. It stands alone
 # outside a repo, and is absent before the first edit.
@@ -367,16 +501,19 @@ fi
 # the Python version still rendered it.
 if positive "$lines_added" || positive "$lines_removed"; then
   first="${first} ${GREEN}+${lines_added}${RESET} ${RED}-${lines_removed}${RESET}"
+  first_n=$((first_n + 4 + ${#lines_added} + ${#lines_removed}))
 fi
 
-printf '%s\n' "$first"
+if [ "$cache_n" -eq 0 ]; then
+  printf '%s\n' "$first"
+elif ! align "$first" "$first_n" "$cache_s" "$cache_n"; then
+  printf '%s%s%s\n' "$first" "$PIPE" "$cache_s"
+fi
 
 # --- line 2 ------------------------------------------------------------------
 #
-# Claude Code exports COLUMNS before running the status line; `tput cols`
-# can't help here because stdout is captured rather than connected to the
-# terminal. Reset times are dropped before alignment is given up on, and only
-# a genuinely too-narrow terminal falls back to plain inline flow.
+# Reset times are dropped before alignment is given up on, and only a genuinely
+# too-narrow terminal falls back to plain inline flow.
 #
 # Building the group is not free -- it forks awk per gauge and date per reset --
 # and this runs every refreshInterval seconds, so the full version is built once
@@ -392,21 +529,13 @@ if [ "$full_n" -eq 0 ] && [ "$right_n" -eq 0 ]; then
   :
 elif [ "$right_n" -eq 0 ]; then
   printf '%s\n' "$full_s"
-elif [ -z "$COLUMNS" ] || ! [ "$COLUMNS" -gt 0 ] 2>/dev/null; then
+elif align "$full_s" "$full_n" "$right_s" "$right_n"; then
+  :
+elif ! have_columns; then
   printf '%s%s%s\n' "$full_s" "$PIPE" "$right_s"
 else
-  usable=$((COLUMNS - RIGHT_MARGIN))
-  pad=$((usable - full_n - right_n))
-  if [ "$pad" -ge 1 ]; then
-    printf '%s%*s%s\n' "$full_s" "$pad" '' "$right_s"
-  else
-    build_left 0
-    pad=$((usable - ACC_N - right_n))
-    if [ "$pad" -ge 1 ]; then
-      printf '%s%*s%s\n' "$ACC_S" "$pad" '' "$right_s"
-    else
-      # Genuinely too narrow to align: inline flow, still without reset times.
-      printf '%s%s%s\n' "$ACC_S" "$PIPE" "$right_s"
-    fi
-  fi
+  build_left 0
+  # Genuinely too narrow to align: inline flow, still without reset times.
+  align "$ACC_S" "$ACC_N" "$right_s" "$right_n" ||
+    printf '%s%s%s\n' "$ACC_S" "$PIPE" "$right_s"
 fi

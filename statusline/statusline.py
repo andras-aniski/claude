@@ -10,7 +10,9 @@ if sys.version_info < (3, 8):
 
 import json
 import os
+import re
 import subprocess
+import time
 from datetime import datetime
 
 # Re-encode stdout to UTF-8 so block/arrow chars render correctly on Windows.
@@ -24,8 +26,9 @@ if hasattr(sys.stdout, 'reconfigure'):
 CYAN  = '\033[1;36m'
 WHITE = '\033[0;37m'
 GREY  = '\033[0;90m'
-GREEN = '\033[1;32m'
-RED   = '\033[1;31m'
+GREEN  = '\033[1;32m'
+YELLOW = '\033[1;33m'
+RED    = '\033[1;31m'
 RESET = '\033[0m'
 
 # Spacing carries the grouping, so it widens with conceptual distance: 1 cell
@@ -92,6 +95,44 @@ def format_reset(ts) -> str:
     return reset.strftime('%a %H:%M')
 
 
+def decimal(value):
+    """A payload value as a float if it reads as plain digits with an optional
+    fraction, otherwise None.
+
+    Deliberately narrower than float(): it accepts exactly what the bash
+    version's decimal() pattern accepts -- a number or numeric string, no sign,
+    no exponent, not a bool -- so both degrade identically on an odd payload.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    text = str(value)
+    if not re.fullmatch(r'[0-9]+(\.[0-9]+)?', text):
+        return None
+    return float(text)
+
+
+def whole(value, limit: int):
+    """Integer part of a decimal() payload value, or None if it isn't one or
+    exceeds limit. The digit-count cap mirrors the bash version, where a
+    longer string would overflow shell arithmetic before the comparison."""
+    if decimal(value) is None:
+        return None
+    digits = str(value).split('.')[0]
+    if len(digits) > 15:
+        return None
+    number = int(digits)
+    return number if number <= limit else None
+
+
+def format_tokens(count: int) -> str:
+    """850 / 45k / 1.2M."""
+    if count < 1000:
+        return str(count)
+    if count < 999500:
+        return f'{(count + 500) // 1000}k'
+    return f'{count / 1000000:.1f}M'
+
+
 def format_duration(ms: float) -> str:
     total = int(ms // 1000)
     if total < 60:
@@ -108,9 +149,10 @@ class Line:
 
     Right-alignment needs to know how many cells a segment occupies, and
     tracking that as the line is built is cheaper and less brittle than
-    stripping ANSI escapes back out afterwards. Every character on line 2 is
-    single-width, so len() is a correct cell count -- do not introduce emoji
-    here.
+    stripping ANSI escapes back out afterwards. Every glyph either line emits
+    (including git's ● ↑ ↓) is single-width, so len() is a correct cell count
+    -- do not introduce emoji here. Directory and branch names are counted the
+    same way, so a wide character in one of them shifts the line 1 alignment.
     """
 
     def __init__(self) -> None:
@@ -120,6 +162,10 @@ class Line:
     def add(self, styled: str, plain: str) -> None:
         self.styled += styled
         self.width  += len(plain)
+
+    def extend(self, other: 'Line') -> None:
+        self.styled += other.styled
+        self.width  += other.width
 
     def sep(self) -> None:
         if self.width:
@@ -176,12 +222,25 @@ def terminal_columns() -> int:
         return 0
 
 
-def compose(full: Line, build_left, right: Line) -> str:
-    """Pins the context gauge to the right edge when it fits.
+def align(left: Line, right: Line):
+    """Pads left so right ends at the usable edge, or None when it can't be
+    aligned: COLUMNS is missing, or the two don't fit side by side.
 
     Claude Code indents the status line by its own built-in spacing, so a line
     of exactly COLUMNS cells overflows the row it's rendered into and gets
     truncated with an ellipsis. RIGHT_MARGIN keeps the content clear of that.
+    """
+    columns = terminal_columns()
+    if columns <= 0:
+        return None
+    pad = columns - RIGHT_MARGIN - left.width - right.width
+    if pad < 1:
+        return None
+    return left.styled + ' ' * pad + right.styled
+
+
+def compose(full: Line, build_left, right: Line) -> str:
+    """Pins the context gauge to the right edge when it fits.
 
     Takes the already-built left group *and* the callable that produced it:
     every path needs the full version, and only the narrow ones need it rebuilt
@@ -194,26 +253,70 @@ def compose(full: Line, build_left, right: Line) -> str:
     if not right.width:
         return full.styled
 
-    columns = terminal_columns()
-    if not columns:
+    aligned = align(full, right)
+    if aligned:
+        return aligned
+
+    if terminal_columns() <= 0:
         return full.styled + PIPE + right.styled
 
-    usable = columns - RIGHT_MARGIN
-    pad = usable - full.width - right.width
-    if pad >= 1:
-        return full.styled + ' ' * pad + right.styled
-
     trimmed = build_left(False)
-    pad = usable - trimmed.width - right.width
-    if pad >= 1:
-        return trimmed.styled + ' ' * pad + right.styled
-
     # Genuinely too narrow to align: inline flow, still without reset times.
-    return trimmed.styled + PIPE + right.styled
+    return align(trimmed, right) or trimmed.styled + PIPE + right.styled
 
 
-def git_segment(cwd: str) -> str:
-    """Branch, dirty marker and ahead/behind counts, or '' outside a repo.
+def cache_segment(cache) -> Line:
+    """'cache 91%  2 misses  42m' while warm, 'cache 91%  cold 45k' once not.
+
+    The percentage is the session's hit ratio, the misses count only appears
+    once there is one, and the countdown is how long until the cached prefix
+    expires -- yellow in the last fifth of its TTL. Once cold, the countdown
+    gives way to what the next request will have to re-cache.
+
+    Empty when the payload has no prompt_cache yet (before the first API
+    response) or caching isn't being reported at all.
+    """
+    segment = Line()
+    if not isinstance(cache, dict) or not cache:
+        return segment
+    if cache.get('caching_observed') is False:
+        return segment
+
+    segment.add(f'{WHITE}cache{RESET}', 'cache')
+
+    ratio = decimal(cache.get('hit_ratio'))
+    if ratio is not None:
+        pct = round_pct(ratio * 100)
+        segment.add(f' {GREY}{pct}%{RESET}', f' {pct}%')
+
+    misses = whole(cache.get('misses'), 10 ** 9)
+    if misses:
+        word = 'miss' if misses == 1 else 'misses'
+        segment.add(f'  {YELLOW}{misses} {word}{RESET}', f'  {misses} {word}')
+
+    # expires_at can lag the clock by up to a refresh interval, so a past
+    # expiry reads as cold even while the payload still says warm.
+    expires = whole(cache.get('expires_at'), 253402300799)
+    left = expires - int(time.time()) if expires is not None else None
+
+    if cache.get('warm') is True and (left is None or left > 0):
+        if left is not None:
+            ttl = 3600 if cache.get('ttl') == '1h' else 300
+            color = YELLOW if left * 5 < ttl else GREEN
+            when = format_duration(left * 1000)
+            segment.add(f'  {color}{when}{RESET}', f'  {when}')
+    else:
+        segment.add(f'  {RED}cold{RESET}', '  cold')
+        recache = whole(cache.get('recache_tokens_if_cold'), 10 ** 15)
+        if recache:
+            tokens = format_tokens(recache)
+            segment.add(f' {GREY}{tokens}{RESET}', f' {tokens}')
+
+    return segment
+
+
+def git_segment(cwd: str) -> Line:
+    """Branch, dirty marker and ahead/behind counts; empty outside a repo.
 
     A single git invocation gathers all three (rather than separate
     rev-parse/branch/rev-list/status calls), since this runs on every status
@@ -228,8 +331,9 @@ def git_segment(cwd: str) -> str:
     except FileNotFoundError:
         git_out = ''
 
+    segment = Line()
     if not git_out:
-        return ''
+        return segment
 
     branch = ''
     ab     = ''
@@ -246,11 +350,11 @@ def git_segment(cwd: str) -> str:
         branch = 'detached'
 
     if not branch:
-        return ''
+        return segment
 
-    segment = f'{WHITE}{branch}{RESET}'
+    segment.add(f'{WHITE}{branch}{RESET}', branch)
     if dirty:
-        segment += f' \033[1;33m●{RESET}'
+        segment.add(f' {YELLOW}●{RESET}', ' ●')
 
     if ab:
         tokens = ab.split()
@@ -259,9 +363,9 @@ def git_segment(cwd: str) -> str:
                 ahead  = int(tokens[0].lstrip('+'))
                 behind = int(tokens[1].lstrip('-'))
                 if ahead  > 0:
-                    segment += f' {GREY}↑{ahead}{RESET}'
+                    segment.add(f' {GREY}↑{ahead}{RESET}', f' ↑{ahead}')
                 if behind > 0:
-                    segment += f' {GREY}↓{behind}{RESET}'
+                    segment.add(f' {GREY}↓{behind}{RESET}', f' ↓{behind}')
             except ValueError:
                 pass
 
@@ -301,26 +405,33 @@ def main() -> None:
     # --- line 1: where the work is happening --------------------------------
     #
     # Location and working-tree state: directory, how long this session has
-    # been going, the branch, and what it has changed. Nothing here is aligned,
-    # so it needs no width accounting.
-    first = f'{WHITE}{directory}{RESET}'
+    # been going, the branch, and what it has changed -- with the prompt cache
+    # pinned to the right edge, directly above the context gauge.
+    first = Line()
+    first.add(f'{WHITE}{directory}{RESET}', directory)
 
     # Elapsed time rides directly on the directory rather than taking its own
     # separator -- it reads as "how long have I been in here".
     if duration:
         clock = format_duration(duration)
-        first += f' {GREY}{clock}{RESET}'
+        first.add(f' {GREY}{clock}{RESET}', f' {clock}')
 
     branch = git_segment(cwd)
-    if branch:
-        first += PIPE + branch
+    if branch.width:
+        first.add(PIPE, PIPE_PLAIN)
+        first.extend(branch)
 
     # Churn sits with the branch: both describe the working tree. It stands
     # alone outside a repo, and is absent before the first edit.
     if added or removed:
-        first += f' {GREEN}+{added}{RESET} {RED}-{removed}{RESET}'
+        churn = f' +{added} -{removed}'
+        first.add(f' {GREEN}+{added}{RESET} {RED}-{removed}{RESET}', churn)
 
-    print(first)
+    cache = cache_segment(data.get('prompt_cache'))
+    if not cache.width:
+        print(first.styled)
+    else:
+        print(align(first, cache) or first.styled + PIPE + cache.styled)
 
     # --- line 2: what the session is spending -------------------------------
     def build_left(with_resets: bool) -> Line:
